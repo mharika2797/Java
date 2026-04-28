@@ -1,0 +1,36 @@
+# ─────────────────────────────────────────────────────────────────────────
+#  GraphQL Schema  —  Controller 3
+#
+#  Key idea: in REST you have many URLs (/books, /books/1, POST /books …)
+#  In GraphQL you have ONE endpoint (/graphql) and the schema below
+#  defines everything the client can ask for or change.
+# ─────────────────────────────────────────────────────────────────────────
+
+# Type — the shape of the data (like a class / JSON structure)
+type Book {
+    id:     ID!       # ID! means non-null; the ! means this field is always present
+    title:  String!
+    author: String!
+    year:   Int!
+    genre:  String!
+}
+
+# Query — READ operations (equivalent to GET in REST)
+# The client chooses exactly which fields it wants back — no over-fetching
+type Query {
+    books:        [Book!]!   # returns a list of all books (never null, items never null)
+    book(id: ID!): Book      # returns one book or null if not found
+}
+
+# Mutation — WRITE operations (equivalent to POST / PUT / DELETE in REST)
+# Every mutation is explicit in the schema — no guessing what changes are allowed
+type Mutation {
+    addBook(
+        title:  String!
+        author: String!
+        year:   Int!
+        genre:  String!
+    ): Book!                 # returns the newly created book
+
+    deleteBook(id: ID!): Boolean!  # returns true if deleted, false if not found
+}
