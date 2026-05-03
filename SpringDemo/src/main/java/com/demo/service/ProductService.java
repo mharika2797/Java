@@ -4,6 +4,7 @@ import com.demo.dto.ProductDTO;
 import com.demo.entity.Product;
 import com.demo.exception.ResourceNotFoundException;
 import com.demo.repository.ProductRepository;
+import com.demo.transformer.ProductTransformer;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -26,9 +27,11 @@ import java.util.List;
 public class ProductService {
 
     private final ProductRepository repo;
+    private final ProductTransformer transformer;
 
-    public ProductService(ProductRepository repo) {
+    public ProductService(ProductRepository repo, ProductTransformer transformer) {
         this.repo = repo;
+        this.transformer = transformer;
     }
 
     // ── READ operations ───────────────────────────────────────────────────────
@@ -37,7 +40,7 @@ public class ProductService {
     public List<ProductDTO> getAll() {
         // repo.findAll() → SELECT * FROM products
         return repo.findAll().stream()
-                .map(this::toDTO)
+                .map(transformer::toDTO)
                 .toList();
     }
 
@@ -45,7 +48,7 @@ public class ProductService {
     public ProductDTO getById(Long id) {
         // repo.findById() → SELECT * FROM products WHERE id = ?
         return repo.findById(id)
-                .map(this::toDTO)
+                .map(transformer::toDTO)
                 .orElseThrow(() -> new ResourceNotFoundException("Product not found: " + id));
     }
 
@@ -53,7 +56,7 @@ public class ProductService {
     public List<ProductDTO> searchByName(String keyword) {
         // repo.findByNameContainingIgnoreCase() → SELECT * FROM products WHERE LOWER(name) LIKE ?
         return repo.findByNameContainingIgnoreCase(keyword).stream()
-                .map(this::toDTO)
+                .map(transformer::toDTO)
                 .toList();
     }
 
@@ -65,7 +68,7 @@ public class ProductService {
         }
         // repo.findByPriceLessThan() → SELECT * FROM products WHERE price < ?
         return repo.findByPriceLessThan(maxPrice).stream()
-                .map(this::toDTO)
+                .map(transformer::toDTO)
                 .toList();
     }
 
@@ -77,7 +80,7 @@ public class ProductService {
         }
         // @Query JPQL → SELECT p FROM Product p WHERE p.price BETWEEN :min AND :max ORDER BY p.price ASC
         return repo.findInPriceRange(min, max).stream()
-                .map(this::toDTO)
+                .map(transformer::toDTO)
                 .toList();
     }
 
@@ -85,7 +88,7 @@ public class ProductService {
     public List<ProductDTO> getAllSortedByPrice() {
         // Native SQL → SELECT * FROM products ORDER BY price ASC
         return repo.findAllSortedByPrice().stream()
-                .map(this::toDTO)
+                .map(transformer::toDTO)
                 .toList();
     }
 
@@ -94,8 +97,8 @@ public class ProductService {
     @Transactional
     public ProductDTO create(ProductDTO dto) {
         // Map DTO → Entity, then repo.save() → INSERT INTO products (name, description, price) VALUES (...)
-        Product p = toEntity(dto);
-        return toDTO(repo.save(p));
+        Product p = transformer.toEntity(dto);
+        return transformer.toDTO(repo.save(p));
     }
 
     @Transactional
@@ -110,7 +113,7 @@ public class ProductService {
         p.setPrice(dto.price());
 
         // 3. repo.save() on a managed entity → UPDATE products SET ... WHERE id = ?
-        return toDTO(repo.save(p));
+        return transformer.toDTO(repo.save(p));
     }
 
     @Transactional
@@ -123,14 +126,4 @@ public class ProductService {
         repo.deleteById(id);
     }
 
-    // ── Mapping helpers ───────────────────────────────────────────────────────
-
-    private ProductDTO toDTO(Product p) {
-        return new ProductDTO(p.getId(), p.getName(), p.getDescription(), p.getPrice());
-    }
-
-    private Product toEntity(ProductDTO dto) {
-        // id is null on create — the DB auto-generates it via IDENTITY strategy
-        return new Product(null, dto.name(), dto.description(), dto.price());
-    }
 }

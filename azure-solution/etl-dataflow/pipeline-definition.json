@@ -1,0 +1,201 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+
+  "// =====================================================================": "",
+  "// ADF Pipeline: ETL_TransformAndPublish": "",
+  "//   Source  : Azure SQL [dbo].[RawData]  (rows where Status = 'Pending')": "",
+  "//   Transform: DataFlow – normalise fields, derive ProcessingKey": "",
+  "//   Sink    : HTTP call to Publisher Function (/api/publish)": "",
+  "// =====================================================================": "",
+
+  "pipeline": {
+    "name": "ETL_TransformAndPublish",
+    "properties": {
+      "description": "Reads pending rows from SQL, transforms via Data Flow, then calls the Publisher Azure Function with the DataId.",
+      "activities": [
+
+        {
+          "name": "LookupPendingRecords",
+          "type": "Lookup",
+          "dependsOn": [],
+          "typeProperties": {
+            "source": {
+              "type": "AzureSqlSource",
+              "sqlReaderQuery": "SELECT DataId, RawPayload, CreatedAt FROM [dbo].[RawData] WHERE Status = 'Pending'",
+              "queryTimeout": "02:00:00"
+            },
+            "dataset": { "referenceName": "DS_AzureSQL_RawData", "type": "DatasetReference" },
+            "firstRowOnly": false
+          }
+        },
+
+        {
+          "name": "ForEachPendingRecord",
+          "type": "ForEach",
+          "dependsOn": [
+            { "activity": "LookupPendingRecords", "dependencyConditions": ["Succeeded"] }
+          ],
+          "typeProperties": {
+            "isSequential": false,
+            "batchCount": 10,
+            "items": {
+              "value": "@activity('LookupPendingRecords').output.value",
+              "type": "Expression"
+            },
+            "activities": [
+
+              {
+                "name": "DataFlow_Transform",
+                "type": "ExecuteDataFlow",
+                "typeProperties": {
+                  "dataflow": {
+                    "referenceName": "DF_TransformRecord",
+                    "type": "DataFlowReference",
+                    "parameters": {
+                      "inputDataId":   { "value": "@item().DataId",     "type": "Expression" },
+                      "inputPayload":  { "value": "@item().RawPayload", "type": "Expression" },
+                      "inputCreatedAt":{ "value": "@item().CreatedAt",  "type": "Expression" }
+                    }
+                  },
+                  "compute": {
+                    "coreCount": 8,
+                    "computeType": "General"
+                  },
+                  "traceLevel": "Fine"
+                }
+              },
+
+              {
+                "name": "CallPublisherFunction",
+                "type": "WebActivity",
+                "dependsOn": [
+                  { "activity": "DataFlow_Transform", "dependencyConditions": ["Succeeded"] }
+                ],
+                "typeProperties": {
+                  "url": {
+                    "value": "@concat(pipeline().parameters.PublisherFunctionBaseUrl, '/api/publish')",
+                    "type": "Expression"
+                  },
+                  "method": "POST",
+                  "headers": {
+                    "Content-Type": "application/json",
+                    "x-functions-key": {
+                      "value": "@pipeline().parameters.PublisherFunctionKey",
+                      "type": "Expression"
+                    }
+                  },
+                  "body": {
+                    "value": "@json(concat('{\"id\":\"', item().DataId, '\",\"source\":\"ADF-ETL\",\"data\":', activity('DataFlow_Transform').output.runStatus.output, '}'))",
+                    "type": "Expression"
+                  }
+                }
+              },
+
+              {
+                "name": "MarkRecordAsProcessed",
+                "type": "SqlServerStoredProcedure",
+                "dependsOn": [
+                  { "activity": "CallPublisherFunction", "dependencyConditions": ["Succeeded"] }
+                ],
+                "typeProperties": {
+                  "storedProcedureName": "[dbo].[usp_MarkRawDataProcessed]",
+                  "storedProcedureParameters": {
+                    "DataId": { "value": { "value": "@item().DataId", "type": "Expression" }, "type": "String" },
+                    "Status": { "value": "Published", "type": "String" }
+                  }
+                },
+                "linkedServiceName": { "referenceName": "LS_AzureSQL", "type": "LinkedServiceReference" }
+              },
+
+              {
+                "name": "MarkRecordFailed",
+                "type": "SqlServerStoredProcedure",
+                "dependsOn": [
+                  { "activity": "CallPublisherFunction", "dependencyConditions": ["Failed"] }
+                ],
+                "typeProperties": {
+                  "storedProcedureName": "[dbo].[usp_MarkRawDataProcessed]",
+                  "storedProcedureParameters": {
+                    "DataId": { "value": { "value": "@item().DataId", "type": "Expression" }, "type": "String" },
+                    "Status": { "value": "Failed", "type": "String" }
+                  }
+                },
+                "linkedServiceName": { "referenceName": "LS_AzureSQL", "type": "LinkedServiceReference" }
+              }
+
+            ]
+          }
+        }
+
+      ],
+
+      "parameters": {
+        "PublisherFunctionBaseUrl": {
+          "type": "string",
+          "description": "Base URL of the Publisher Function App, e.g. https://func-publisher-prod.azurewebsites.net"
+        },
+        "PublisherFunctionKey": {
+          "type": "string",
+          "description": "Function host key for the Publisher Function (stored in AKV linked service)"
+        }
+      },
+
+      "annotations": ["ETL", "Publisher", "DataFlow"]
+    }
+  },
+
+  "dataflow": {
+    "name": "DF_TransformRecord",
+    "properties": {
+      "description": "Normalises a raw payload row: trims strings, derives ProcessingKey, enriches with ETL metadata.",
+      "folder": { "name": "ETL" },
+      "type": "MappingDataFlow",
+      "typeProperties": {
+        "sources": [
+          {
+            "name": "SourceParam",
+            "description": "Inline dataset fed by ForEach parameters",
+            "dataset": { "referenceName": "DS_AzureSQL_RawData", "type": "DatasetReference" }
+          }
+        ],
+        "transformations": [
+          {
+            "name": "DerivedColumns",
+            "description": "Trim fields, derive ProcessingKey, add ETL timestamp",
+            "type": "DerivedColumn",
+            "typeProperties": {
+              "columns": [
+                { "name": "DataId",         "expression": "trim(DataId)" },
+                { "name": "RawPayload",     "expression": "trim(RawPayload)" },
+                { "name": "ProcessingKey",  "expression": "concat(DataId, '-', toString(currentTimestamp(), 'yyyyMMddHHmmss'))" },
+                { "name": "ETLProcessedAt", "expression": "currentTimestamp()" },
+                { "name": "ETLVersion",     "expression": "'1.0'" }
+              ]
+            }
+          },
+          {
+            "name": "FilterNullIds",
+            "description": "Drop rows with no DataId",
+            "type": "Filter",
+            "typeProperties": {
+              "condition": "!isNull(DataId) && length(DataId) > 0"
+            }
+          }
+        ],
+        "sinks": [
+          {
+            "name": "SinkToSQL",
+            "description": "Write transformed records to [dbo].[TransformedData]",
+            "dataset": { "referenceName": "DS_AzureSQL_TransformedData", "type": "DatasetReference" },
+            "typeProperties": {
+              "preSQLs": [],
+              "postSQLs": []
+            }
+          }
+        ],
+        "script": "// Mapping Data Flow script (auto-generated – edit in ADF Studio)\nsource(output(\n    DataId as string,\n    RawPayload as string,\n    CreatedAt as timestamp\n),\nallowSchemaDrift: true,\nvalidateSchema: false) ~> SourceParam\nSourceParam derive(\n    DataId = trim(DataId),\n    RawPayload = trim(RawPayload),\n    ProcessingKey = concat(DataId, '-', toString(currentTimestamp(), 'yyyyMMddHHmmss')),\n    ETLProcessedAt = currentTimestamp(),\n    ETLVersion = '1.0'\n) ~> DerivedColumns\nDerivedColumns filter(!isNull(DataId) && length(DataId) > 0) ~> FilterNullIds\nFilterNullIds sink(\n    allowSchemaDrift: true,\n    validateSchema: false,\n    deletable: false,\n    insertable: true,\n    updateable: false,\n    upsertable: true,\n    keys: ['DataId'],\n    format: 'table'\n) ~> SinkToSQL"
+      }
+    }
+  }
+}

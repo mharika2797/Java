@@ -1,7 +1,7 @@
 package com.demo.service;
 
-import com.demo.client.PostClient;
 import com.demo.dto.PostDTO;
+import com.demo.repository.PostRepository;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -9,17 +9,17 @@ import java.util.List;
 @Service
 public class PostService {
 
-    private final PostClient client;
+    private final PostRepository postRepository;
 
-    public PostService(PostClient client) {
-        this.client = client;
+    public PostService(PostRepository postRepository) {
+        this.postRepository = postRepository;
     }
 
     public List<PostDTO> getAllPosts() {
-        return client.fetchAll();
+        return postRepository.findAll();
     }
 
     public PostDTO getPost(int id) {
-        return client.fetchById(id);
+        return postRepository.findById(id);
     }
 }
